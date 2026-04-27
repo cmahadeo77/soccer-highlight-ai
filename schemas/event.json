@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SoccerEvent",
+  "type": "object",
+  "properties": {
+    "event_id":       { "type": "string" },
+    "timestamp_sec":  { "type": "number", "description": "Start time in seconds from video start" },
+    "duration_sec":   { "type": "number", "description": "Suggested clip duration in seconds" },
+    "clip_start_sec": { "type": "number", "description": "Clip start with pre-roll buffer" },
+    "clip_end_sec":   { "type": "number", "description": "Clip end with post-roll buffer" },
+    "event_type": {
+      "type": "string",
+      "enum": ["skill_move", "key_pass", "defensive_play", "recovery_run", "50_50_ball", "shot", "tackle", "interception", "clearance", "sprint"]
+    },
+    "highlight_score": { "type": "integer", "minimum": 1, "maximum": 10, "description": "AI-rated highlight value" },
+    "description":    { "type": "string", "description": "Claude's plain-English description of the play" },
+    "keyframe_path":  { "type": "string" },
+    "player_visible": { "type": "boolean" },
+    "confidence":     { "type": "string", "enum": ["high", "medium", "low"] }
+  },
+  "required": ["event_id", "timestamp_sec", "event_type", "highlight_score", "description"]
+}

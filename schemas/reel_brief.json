@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReelBrief",
+  "type": "object",
+  "properties": {
+    "player_jersey":   { "type": "string" },
+    "video_source":    { "type": "string" },
+    "processed_at":    { "type": "string", "format": "date-time" },
+    "total_events":    { "type": "integer" },
+    "reel_duration_sec": { "type": "number" },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/event" }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "skill_moves":     { "type": "integer" },
+        "key_passes":      { "type": "integer" },
+        "defensive_plays": { "type": "integer" },
+        "recovery_runs":   { "type": "integer" },
+        "50_50_balls":     { "type": "integer" },
+        "shots":           { "type": "integer" }
+      }
+    },
+    "top_clips": {
+      "type": "array",
+      "description": "Top 8-10 clips ranked by highlight score, ready for reel assembly",
+      "items": { "type": "string", "description": "Path to extracted clip file" }
+    },
+    "recruiting_notes": {
+      "type": "string",
+      "description": "Claude-generated recruiting summary paragraph based on detected highlights"
+    }
+  }
+}

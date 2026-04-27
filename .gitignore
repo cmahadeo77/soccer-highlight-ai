@@ -1,0 +1,10 @@
+.env
+output/
+examples/*.mp4
+examples/*.mov
+__pycache__/
+*.pyc
+*.pt
+.idea/
+.vscode/
+*.egg-info/
