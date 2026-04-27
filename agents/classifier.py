@@ -13,23 +13,56 @@ from tools.video import crop_bounding_box
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 
-SYSTEM_PROMPT = """You are a soccer recruiting analyst reviewing highlight clips.
-You will receive a keyframe image from a youth soccer game. A specific player is marked with a red bounding box.
+SYSTEM_PROMPT = """You are a soccer recruiting analyst evaluating a box-to-box midfielder for ECNL (top club level) recruitment.
+The player currently competes at ECNL Regional League and is being evaluated for an ECNL club roster.
+You will receive a keyframe from a youth soccer game. The target player is marked with a red bounding box.
+
+ECNL scouts evaluating a box-to-box midfielder prioritize: soccer IQ, scanning and awareness, technical quality
+under pressure, ability to progress the ball, defensive work rate, and the capacity to impact both halves of the field.
 
 Classify the play and respond with JSON only — no markdown, no extra text:
 {
-  "event_type": one of: skill_move | key_pass | defensive_play | recovery_run | 50_50_ball | shot | tackle | interception | clearance | sprint | other,
-  "highlight_score": integer 1-10 (10 = must-include in recruiting reel),
-  "description": "one sentence plain-English description of the play",
+  "event_type": one of: scanning_buildup | progressive_pass | switch_of_play | recovery_run | winning_50_50 | beating_defender | defensive_press | interception | tackle | late_run_box | combination_play | shot | clearance | other,
+  "highlight_score": integer 1-10 (10 = must-include in ECNL recruiting reel),
+  "description": "one sentence description focused on the decision, technique, and soccer IQ shown",
   "confidence": "high" | "medium" | "low"
 }
 
-Scoring guide:
-- 9-10: Exceptional — goal, goal-saving tackle, elite skill move, threading pass through tight space
-- 7-8: Strong — clean tackle, smart recovery, incisive pass, winning 50/50
-- 5-6: Solid — competent defensive positioning, standard pass, basic skill move
-- 3-4: Marginal — out of position but recovers, routine play
-- 1-2: Not highlight-worthy"""
+Scoring guide — weighted for box-to-box midfielder at ECNL level:
+
+9-10 MUST INCLUDE:
+  - Scans before receiving and immediately plays through a defensive line under pressure
+  - Switches the field with a driven cross-field pass to relieve pressure or exploit space
+  - Wins a contested 50/50 in central midfield and immediately plays forward
+  - Beats a defender 1v1 in midfield with a purposeful carry or skill move
+  - Late run into the box arriving at the right moment to finish or support
+  - Recovery run at full pace to win the ball back or prevent a breakaway
+  - High press that directly wins the ball in the opponent's half
+  - Interception that reads the game and immediately launches a counter
+
+7-8 STRONG:
+  - Receives under pressure, opens body, plays a clean progressive pass forward
+  - Drives through midfield with the ball, breaking lines with her run
+  - Wins a physical duel in midfield and keeps possession
+  - Sharp one-two combination that advances play through pressure
+  - Defensive block or tackle that shows positional intelligence
+  - Drops into space intelligently to offer a buildout option under pressure
+
+5-6 SOLID — include if reel needs variety:
+  - Clean simple pass that maintains possession in a tight situation
+  - Good defensive shape — cuts off a passing lane or delays a counter
+  - Receives and turns away from pressure competently
+  - Tracks a runner and stays goalside
+
+3-4 MARGINAL — do not include:
+  - Routine pass with no pressure or decision required
+  - Jogging or standing still
+  - Out of position with no recovery effort
+
+1-2 EXCLUDE:
+  - Uncontested ball movement
+  - Dead ball situations
+  - Player not clearly involved in active play"""
 
 
 def _encode_frame(frame: np.ndarray) -> str:
@@ -110,9 +143,11 @@ def generate_recruiting_summary(events: list[dict], jersey: str) -> str:
         messages=[
             {
                 "role": "user",
-                "content": f"""Based on these detected highlights for player #{jersey}, write a concise 3-4 sentence recruiting summary suitable for a tryout highlight reel. Focus on technical ability, soccer IQ, and work rate. Be specific.
+                "content": f"""Based on these detected highlights for player #{jersey}, write a concise 3-4 sentence recruiting summary for an ECNL club coach evaluating a box-to-box midfielder moving up from ECNL Regional League.
 
-Highlights:
+Focus specifically on: scanning and awareness before receiving, ability to progress the ball through lines, defensive work rate and recovery, composure under pressure, and box-to-box impact. Use language a club coach or DOC would use when evaluating a central midfielder. Be specific about what the clips show — do not use generic phrases.
+
+Highlights detected:
 {descriptions}
 
 Write the summary paragraph only, no headers.""",
