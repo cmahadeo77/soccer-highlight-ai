@@ -213,50 +213,80 @@ def run(url: str, jersey: str | None, output: str, debug: bool) -> list[dict]:
             print("[Auth] Logged in.\n")
 
             # ── Navigate to match player-moments view ────────────────────────
-            print(f"[Match] Loading player-moments view...")
+            print("[Match] Loading player-moments view...")
             page.goto(player_moments_url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(6)   # give SPA time to fire all API calls
+            time.sleep(6)
 
-            # If jersey filter needed, try to find and activate it in the UI
-            if jersey:
-                print(f"[Player] Looking for jersey #{jersey} filter...")
+            # ── Try to probe player-moments API directly using browser's fetch ─
+            # We know the match ID from the recording; try likely endpoint patterns.
+            # The browser's fetch carries the auth session cookies automatically.
+            match_id = "f98d6f0e-62ec-45ac-b83c-c1aabd283e7b"
+            karina_player_id = "68ab5b2a4fd3128d45d26c15"  # Karina Mahadeo, jersey #11
+
+            probe_urls = [
+                f"https://app.veo.co/api/app/matches/{match_id}/player-moments/",
+                f"https://app.veo.co/api/app/matches/{match_id}/player-moments/?player_id={karina_player_id}",
+                f"https://app.veo.co/api/app/matches/{match_id}/highlights/?player={karina_player_id}&include_ai=true",
+                f"https://app.veo.co/api/app/matches/{match_id}/highlights/?player_id={karina_player_id}&include_ai=true",
+                f"https://d3g8j1j1rf6msg.cloudfront.net/api/v1/{match_id}/player-moments",
+                f"https://d3g8j1j1rf6msg.cloudfront.net/api/v1/{match_id}/player-moments?playerId={karina_player_id}",
+                f"https://dt3kfuz4eo879.cloudfront.net/recordings/{match_id}/events?type=player_moment",
+                f"https://dt3kfuz4eo879.cloudfront.net/recordings/{match_id}/events?type=player_moments&player_id={karina_player_id}",
+            ]
+
+            print("[Probe] Trying known player-moments endpoint patterns...")
+            for probe_url in probe_urls:
                 try:
-                    selectors = [
-                        f"text=#{jersey}",
-                        f"[data-jersey='{jersey}']",
-                        f"[aria-label*='{jersey}']",
-                        "input[placeholder*='player' i]",
-                        "input[placeholder*='jersey' i]",
-                        "input[placeholder*='search' i]",
-                    ]
-                    found = False
-                    for sel in selectors:
+                    result = page.evaluate(f"""
+                        async () => {{
+                            const r = await fetch("{probe_url}", {{credentials: "include"}});
+                            return {{status: r.status, body: await r.text()}};
+                        }}
+                    """)
+                    status = result.get("status")
+                    body_str = result.get("body", "")[:200]
+                    print(f"  [{status}] {probe_url[:90]}")
+                    if status == 200 and len(body_str) > 10:
                         try:
-                            el = page.query_selector(sel)
-                            if el:
-                                el.click()
-                                time.sleep(1)
-                                if "input" in sel:
-                                    el.fill(str(jersey))
-                                    time.sleep(1)
-                                    page.keyboard.press("Enter")
-                                    time.sleep(2)
-                                found = True
-                                print(f"  Used selector: {sel}")
-                                break
+                            body_json = json.loads(result.get("body", "{}"))
+                            captured_api.append({"url": probe_url, "status": status, "body": body_json})
+                            if _looks_like_moments(body_json):
+                                moments_raw.append(body_json)
+                                print(f"    -> MOMENTS DATA FOUND")
                         except Exception:
                             pass
-                    if not found:
-                        print(f"  Could not find jersey #{jersey} UI filter — capturing all player moments")
                 except Exception as e:
-                    print(f"  Player filter attempt failed: {e}")
+                    print(f"  [ERR] {probe_url[:80]}: {e}")
 
-            # Wait for any additional calls after filter interaction
+            # ── Try clicking on "Karina" in the player-moments UI ─────────────
+            print("\n[Player] Trying to select Karina Mahadeo in the UI...")
+            try:
+                # Try clicking player by name
+                for name_fragment in ["Karina", "Karina Mahadeo"]:
+                    el = page.query_selector(f"text={name_fragment}")
+                    if el:
+                        el.click()
+                        print(f"  Clicked on '{name_fragment}' in UI")
+                        time.sleep(4)
+                        break
+                else:
+                    # Try finding the player avatar/button by player_id attribute
+                    el = page.query_selector(f"[data-player-id='{karina_player_id}']")
+                    if el:
+                        el.click()
+                        print(f"  Clicked player by data-player-id attribute")
+                        time.sleep(4)
+                    else:
+                        print("  Player not found in UI — page may not have fully rendered")
+            except Exception as e:
+                print(f"  UI click attempt failed: {e}")
+
+            # Wait for any new API calls triggered by the player selection
             time.sleep(5)
             try:
                 page.wait_for_load_state("networkidle", timeout=8000)
             except Exception:
-                pass  # SPA may never fully settle
+                pass
 
         finally:
             browser.close()
@@ -266,6 +296,24 @@ def run(url: str, jersey: str | None, output: str, debug: bool) -> list[dict]:
         with open("debug_api_calls.json", "w") as f:
             json.dump(captured_api, f, indent=2, default=str)
         print(f"[Debug] {len(captured_api)} API calls saved to debug_api_calls.json")
+
+    # ── Extract step_event ball_in_play windows (always available) ───────────
+    ball_in_play_windows = []
+    for entry in captured_api:
+        body = entry.get("body", {})
+        if isinstance(body, dict) and "events" in body and "version" in body:
+            for ev in body.get("events", []):
+                if ev.get("name") == "ball_in_play":
+                    ball_in_play_windows.append({
+                        "start_sec": ev["timestamp_start"],
+                        "end_sec":   ev["timestamp_end"],
+                    })
+
+    if ball_in_play_windows:
+        bip_path = output.replace(".json", "_ball_in_play.json")
+        with open(bip_path, "w") as f:
+            json.dump(ball_in_play_windows, f, indent=2)
+        print(f"[Ball-in-play] {len(ball_in_play_windows)} windows saved to {bip_path}")
 
     # ── Extract and normalize moments ────────────────────────────────────────
     all_moments = []
