@@ -33,6 +33,9 @@ def parse_args():
                    help="Path to Veo moments JSON (from capture_veo_moments.py). "
                         "Used as anchor timestamps to re-identify the player at known points; "
                         "the full game is still scanned independently.")
+    p.add_argument("--ball-in-play", default=None, dest="ball_in_play",
+                   help="Path to ball_in_play windows JSON (from capture_veo_moments.py). "
+                        "Frames outside live play windows are skipped — cuts scan time by ~40%%.")
     return p.parse_args()
 
 
@@ -51,24 +54,34 @@ def main():
     info = get_video_info(args.video)
     print(f"[Info] {info['duration_sec']/60:.1f} min | {info['fps']:.1f} fps | {info['width']}x{info['height']}")
 
-    # ── 1b. Load Veo moments anchors (optional) ───────────────────────────────
+    # ── 1b. Load Veo metadata (optional) ─────────────────────────────────────
     veo_anchor_timestamps = set()
-    veo_moments_count = 0
+
+    # Ball-in-play windows: skip dead ball frames for faster scanning
+    live_windows = []  # list of (start_sec, end_sec) tuples
+    if args.ball_in_play:
+        try:
+            with open(args.ball_in_play) as f:
+                bip = json.load(f)
+            live_windows = [(w["start_sec"], w["end_sec"]) for w in bip]
+            total_live = sum(e - s for s, e in live_windows)
+            print(f"[Ball-in-play] {len(live_windows)} live windows loaded ({total_live/60:.1f} min). "
+                  f"Dead ball frames will be skipped.")
+        except Exception as e:
+            print(f"[Ball-in-play] Could not load {args.ball_in_play}: {e}")
+
+    # Veo moment anchors: force player re-identification at known action windows
     if args.moments:
         try:
             with open(args.moments) as f:
                 veo_moments = json.load(f)
-            # Collect timestamps ± 2s as a re-identification window
             for m in veo_moments:
                 center = m.get("start_sec", 0)
-                for offset in range(-2, 10):   # cover the moment window
+                for offset in range(-2, 10):
                     veo_anchor_timestamps.add(round(center + offset, 1))
-            veo_moments_count = len(veo_moments)
-            print(f"[Moments] Loaded {veo_moments_count} Veo anchor moments — "
-                  f"will force re-identification at those timestamps.\n"
-                  f"  Full game will still be scanned independently for moments Veo missed.")
+            print(f"[Moments] {len(veo_moments)} Veo anchor moments loaded for forced re-identification.")
         except Exception as e:
-            print(f"[Moments] Could not load {args.moments}: {e} — continuing without anchors.")
+            print(f"[Moments] Could not load {args.moments}: {e}")
 
     # ── 2. Extract frames + run detection + tracking ─────────────────────────
     print(f"\n[Step 1/4] Scanning full game at {args.fps} fps...")
@@ -77,10 +90,20 @@ def main():
     active_ts     = []   # timestamps where target player is visible
     active_data   = {}   # timestamp -> {frame, bbox} for keyframe saving
 
+    def is_live(ts: float) -> bool:
+        """Return True if timestamp falls within a ball-in-play window."""
+        if not live_windows:
+            return True  # no filter — scan everything
+        return any(s <= ts <= e for s, e in live_windows)
+
     for i, (frame_idx, ts, frame) in enumerate(extract_frames(args.video, sample_fps=args.fps)):
         if i % 50 == 0:
             pct = (i / total_sample_frames) * 100 if total_sample_frames > 0 else 0
             print(f"  {pct:.0f}% — {ts/60:.1f} min scanned", end="\r", flush=True)
+
+        # Skip dead ball frames — throw-ins, free kicks, goal kicks, half time
+        if not is_live(ts):
+            continue
 
         detections  = detect_players(frame)
         tracks      = update_tracks(frame, detections)
