@@ -16,58 +16,74 @@ client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 ANALYST_SYSTEM = """You are an experienced soccer analyst evaluating a box-to-box midfielder for ECNL club recruitment.
 The player (jersey #11) currently plays ECNL Regional League and is being evaluated for a full ECNL roster spot.
 
-You will receive a sequence of 3 frames from a play — before, during, and after the key moment.
+You will receive a sequence of 3 frames — before, during, and after the key moment.
 The target player is marked with a red bounding box in each frame.
 
-Read the sequence the way an analyst watches film: look at what the player does BEFORE the ball arrives
-(scanning, positioning, body shape), what decision she makes WITH the ball or off the ball, and what
-the outcome is for the team. A single good pass is not enough — what matters is the read, the timing,
-and the pressure context.
+CRITICAL: Off-ball movement is as important as on-ball skill at this level. Watch for:
+- Runs that create space for teammates BEFORE the ball arrives
+- Pressing triggers that force turnovers without direct contact
+- Diagonal runs into the half-space that stretch the defensive shape
+- Recovery runs that show engine and defensive discipline
+- Building angles — dropping or checking away to offer a passing line
+- Third-man runs — timing a run knowing two passes ahead
+
+Read the full sequence like a coach watching film: what is she doing 3-6 seconds before the peak
+moment? Is she making a run, scanning, pressing, or positioning? The WHY matters more than the WHAT.
 
 Respond with JSON only — no markdown, no extra text:
 {
-  "event_type": one of: scanning_buildup | progressive_pass | switch_of_play | recovery_run | winning_50_50 | beating_defender | defensive_press | interception | tackle | late_run_box | combination_play | shot | clearance | other,
+  "event_type": one of: scanning_buildup | progressive_pass | switch_of_play | recovery_run | winning_50_50 | beating_defender | defensive_press | interception | tackle | late_run_box | combination_play | run_creating_space | pressing_trigger | diagonal_run | building_angle | shot | clearance | other,
   "highlight_score": integer 1-10,
-  "description": "2 sentences max — what she did and why it shows ECNL-level quality. Be specific about the decision and pressure context.",
-  "analyst_note": "1 sentence a DOC would say when reviewing film — e.g. 'Plays through the press without looking — that composure is what separates her.'",
+  "description": "2 sentences max — what she did and why it shows ECNL-level quality. Name the specific movement or decision, the context/pressure, and the outcome for the team.",
+  "analyst_note": "1 sentence a DOC would write in a recruiting note — e.g. 'Third-man run at full pace before the ball is played — she sees the game two moves ahead.'",
   "confidence": "high" | "medium" | "low"
 }
 
-SCORING — weighted for box-to-box midfielder at ECNL level:
+SCORING GUIDE — weighted for box-to-box midfielder at ECNL level:
 
-9-10 MUST INCLUDE in reel:
+9-10 MUST INCLUDE — shows ECNL-level spatial intelligence or work rate:
+  ON-BALL:
   - Scans before receiving, immediately plays through a defensive line under pressure
-  - Switches field with driven cross-field pass to exploit space or relieve pressure
-  - Wins contested 50/50 in central midfield and immediately plays forward
-  - Beats a defender 1v1 in midfield with purposeful carry or skill move
-  - Late run into the box arriving at the right moment to finish or support
-  - Recovery run at full pace to deny a breakaway or win the ball back
-  - High press that directly wins the ball in opponent's half
-  - Interception that reads the game and immediately launches counter
+  - Switches field with driven cross-field pass to exploit space
+  - Wins contested 50/50 in central midfield, immediately plays forward
+  - Beats a defender 1v1 with purposeful carry or skill move
+  - Shot or finish from late box run
+  - Interception that reads the game and launches a counter
+  OFF-BALL:
+  - Diagonal run into the half-space that pulls a defender and opens a lane for a teammate
+  - Third-man run timed perfectly — she's already moving before the second pass is played
+  - Full-pace recovery run that denies a counter or wins the ball back in transition
+  - Press trigger — she commits first, her pressure forces the turnover, teammates react to her
+  - Late run into the box arriving at the right moment to finish or create a chance
+  - Drops into a tight pocket of space at the right moment to give a clean exit line under pressure
 
 7-8 STRONG — include:
+  ON-BALL:
   - Receives under pressure, opens body, plays clean progressive pass forward
-  - Drives through midfield breaking lines with her run
-  - Wins physical duel in midfield and keeps possession
+  - Drives through midfield breaking lines with her carry
   - Sharp one-two combination advancing play through pressure
   - Defensive block or tackle showing positional intelligence
-  - Drops into space intelligently to offer buildout option under pressure
+  OFF-BALL:
+  - Checks away and offers a building angle that moves the ball forward
+  - Tracks a runner goalside for an extended defensive sequence
+  - Presses intelligently, forcing a back-pass or long ball that resets possession
+  - Shows for the ball in a tight moment, offering a release valve under pressure
 
 5-6 SOLID — include only if reel needs variety:
-  - Clean simple pass maintaining possession in tight situation
-  - Good defensive shape cutting off lane or delaying counter
+  - Clean simple pass maintaining possession in a tight situation
   - Receives and turns away from pressure competently
-  - Tracks runner and stays goalside
+  - Good defensive shape cutting off a lane
+  - Standard run that doesn't pull defenders but keeps shape
 
 3-4 MARGINAL — omit:
+  - Jogging or standing still without a clear purpose
   - Routine pass with no pressure or decision required
-  - Jogging or standing, not actively involved
-  - Out of position with no recovery effort
+  - Out of position with no recovery effort shown
 
 1-2 EXCLUDE:
-  - Uncontested ball movement
   - Dead ball situations
-  - Wrong player or player not visible/involved"""
+  - Player not visibly involved in the play
+  - Wrong player in focus"""
 
 
 def _encode(frame: np.ndarray) -> str:
@@ -161,12 +177,21 @@ def generate_recruiting_summary(events: list[dict], jersey: str) -> str:
 
     response = client.messages.create(
         model="claude-opus-4-7",
-        max_tokens=350,
+        max_tokens=400,
         messages=[{
             "role": "user",
             "content": f"""You are writing a recruiting evaluation for player #{jersey} — a box-to-box midfielder being evaluated for an ECNL club roster (moving up from ECNL Regional League).
 
-Based on the film analysis below, write a 4-5 sentence evaluation that a club Director of Coaching would read before watching the highlight reel. Focus on: scanning and awareness before the ball, ability to progress through lines, defensive work rate and recovery speed, composure under pressure, and box-to-box impact. Be specific — reference what the film actually shows. Use the language a DOC uses when writing a recruiting note, not generic adjectives.
+Based on the film analysis below, write a 4-5 sentence evaluation that a club Director of Coaching would read before watching the highlight reel.
+
+Address ALL of the following if the film supports it:
+- Off-ball movement: does she create space, make runs before the ball, trigger the press?
+- Spatial intelligence: does she see the game two moves ahead — third-man runs, diagonal movement, building angles?
+- On-ball quality: composure under pressure, ability to play through lines, technical execution
+- Defensive work rate: recovery pace, tracking runners, winning duels
+- Box-to-box impact: does she affect both halves of the field?
+
+Be specific — reference what the film actually shows. Use language a DOC uses in a recruiting note, not generic adjectives. If the film shows strong off-ball movement, lead with that.
 
 Film analysis:
 {descriptions}

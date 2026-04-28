@@ -19,8 +19,13 @@ class EventWindow:
     confidence: str = "low"
 
     def to_dict(self) -> dict:
-        pre_roll  = 3.0
-        post_roll = 2.0
+        # Off-ball movement events need more pre-roll so the run developing is visible
+        OFF_BALL_TYPES = {
+            "run_creating_space", "pressing_trigger", "diagonal_run",
+            "recovery_run", "late_run_box", "building_angle", "scanning_buildup",
+        }
+        pre_roll  = 6.0 if self.event_type in OFF_BALL_TYPES else 3.0
+        post_roll = 3.0 if self.event_type in OFF_BALL_TYPES else 2.0
         return {
             "event_id":       str(uuid.uuid4())[:8],
             "timestamp_sec":  round(self.peak_sec, 2),
