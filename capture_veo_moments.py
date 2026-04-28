@@ -170,10 +170,16 @@ def run(url: str, jersey: str | None, output: str, debug: bool) -> list[dict]:
         page    = context.new_page()
 
         # ── Intercept all JSON API responses ────────────────────────────────
+        # Known Veo API patterns (discovered from first run)
+        MOMENTS_PATTERNS = ["match-events", "events?type=", "player-events", "highlights"]
+
         def on_response(response):
             url_r = response.url
             ct    = response.headers.get("content-type", "")
-            if "json" not in ct and "graphql" not in url_r:
+            is_json = "json" in ct or "graphql" in url_r
+            is_moments = any(p in url_r for p in MOMENTS_PATTERNS)
+
+            if not (is_json or is_moments):
                 return
             try:
                 body = response.json()
@@ -183,78 +189,79 @@ def run(url: str, jersey: str | None, output: str, debug: bool) -> list[dict]:
             entry = {"url": url_r, "status": response.status, "body": body}
             captured_api.append(entry)
 
-            if _looks_like_moments(body):
+            # Prioritize known moments endpoints; also run general heuristic
+            if is_moments or _looks_like_moments(body):
                 print(f"  [API] Candidate moments response: {url_r[:100]}")
                 moments_raw.append(body)
 
         page.on("response", on_response)
 
-        # ── Login ────────────────────────────────────────────────────────────
-        print("[Auth] Logging in to Veo...")
-        page.goto("https://app.veo.co/login/", wait_until="domcontentloaded", timeout=30000)
-        time.sleep(2)
-        page.fill('input[type="email"]', email, timeout=10000)
-        page.fill('input[type="password"]', password, timeout=10000)
-        page.keyboard.press("Enter")
-        page.wait_for_load_state("networkidle", timeout=20000)
-        time.sleep(2)
+        try:
+            # ── Login ────────────────────────────────────────────────────────
+            print("[Auth] Logging in to Veo...")
+            page.goto("https://app.veo.co/login/", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2)
+            page.fill('input[type="email"]', email, timeout=10000)
+            page.fill('input[type="password"]', password, timeout=10000)
+            page.keyboard.press("Enter")
+            page.wait_for_load_state("networkidle", timeout=20000)
+            time.sleep(2)
 
-        if "login" in page.url.lower():
-            print("[Auth] Login failed — check VEO_EMAIL / VEO_PASSWORD")
-            browser.close()
-            sys.exit(1)
-        print("[Auth] Logged in.\n")
+            if "login" in page.url.lower():
+                print("[Auth] Login failed — check VEO_EMAIL / VEO_PASSWORD")
+                return []
+            print("[Auth] Logged in.\n")
 
-        # ── Navigate to match player-moments view ────────────────────────────
-        print(f"[Match] Loading player-moments view...")
-        page.goto(player_moments_url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(5)   # give SPA time to fetch moments data
+            # ── Navigate to match player-moments view ────────────────────────
+            print(f"[Match] Loading player-moments view...")
+            page.goto(player_moments_url, wait_until="domcontentloaded", timeout=30000)
+            time.sleep(6)   # give SPA time to fire all API calls
 
-        # If jersey filter needed, try to find and activate it in the UI
-        if jersey:
-            print(f"[Player] Looking for jersey #{jersey} filter...")
-            try:
-                # Veo player selector: look for input or dropdown with jersey/player search
-                selectors = [
-                    f"text=#{jersey}",
-                    f"[data-jersey='{jersey}']",
-                    f"[aria-label*='{jersey}']",
-                    "input[placeholder*='player' i]",
-                    "input[placeholder*='jersey' i]",
-                    "input[placeholder*='search' i]",
-                ]
-                found = False
-                for sel in selectors:
-                    try:
-                        el = page.query_selector(sel)
-                        if el:
-                            el.click()
-                            time.sleep(1)
-                            if "input" in sel:
-                                el.fill(str(jersey))
+            # If jersey filter needed, try to find and activate it in the UI
+            if jersey:
+                print(f"[Player] Looking for jersey #{jersey} filter...")
+                try:
+                    selectors = [
+                        f"text=#{jersey}",
+                        f"[data-jersey='{jersey}']",
+                        f"[aria-label*='{jersey}']",
+                        "input[placeholder*='player' i]",
+                        "input[placeholder*='jersey' i]",
+                        "input[placeholder*='search' i]",
+                    ]
+                    found = False
+                    for sel in selectors:
+                        try:
+                            el = page.query_selector(sel)
+                            if el:
+                                el.click()
                                 time.sleep(1)
-                                # Try pressing Enter or selecting from dropdown
-                                page.keyboard.press("Enter")
-                                time.sleep(2)
-                            found = True
-                            print(f"  Used selector: {sel}")
-                            break
-                    except Exception:
-                        pass
+                                if "input" in sel:
+                                    el.fill(str(jersey))
+                                    time.sleep(1)
+                                    page.keyboard.press("Enter")
+                                    time.sleep(2)
+                                found = True
+                                print(f"  Used selector: {sel}")
+                                break
+                        except Exception:
+                            pass
+                    if not found:
+                        print(f"  Could not find jersey #{jersey} UI filter — capturing all player moments")
+                except Exception as e:
+                    print(f"  Player filter attempt failed: {e}")
 
-                if not found:
-                    print(f"  Could not find jersey #{jersey} UI filter — capturing all player moments")
-            except Exception as e:
-                print(f"  Player filter attempt failed: {e}")
+            # Wait for any additional calls after filter interaction
+            time.sleep(5)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass  # SPA may never fully settle
 
-        # Wait for additional API calls after any filter interaction
-        time.sleep(5)
-        page.wait_for_load_state("networkidle", timeout=10000)
-        time.sleep(2)
+        finally:
+            browser.close()
 
-        browser.close()
-
-    # ── Save debug dump ──────────────────────────────────────────────────────
+    # ── Save debug dump — always, even after partial runs ────────────────────
     if debug:
         with open("debug_api_calls.json", "w") as f:
             json.dump(captured_api, f, indent=2, default=str)
