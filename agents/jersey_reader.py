@@ -1,47 +1,69 @@
 """
-Jersey Reader — OCR jersey numbers from player bounding boxes.
-Uses EasyOCR with upscaling for small Veo wide-angle footage.
+Jersey Reader — Claude Vision jersey number identification.
+Replaces EasyOCR: sends player crops to Claude Haiku to read jersey numbers,
+which works on Veo's wide-angle aerial footage where EasyOCR fails.
 """
 
+import anthropic
+import base64
+import cv2
 import numpy as np
-import easyocr
-from tools.video import crop_bounding_box, upscale
+import os
+from tools.video import crop_bounding_box
 
-_reader = None
+_client = None
+_attempt_log: dict[int, int] = {}  # track_id -> frame_idx of last read attempt
+RETRY_INTERVAL = 60  # re-attempt unconfirmed tracks every 60 sampled frames (~30s at 2fps)
 
-def _get_reader():
-    global _reader
-    if _reader is None:
-        _reader = easyocr.Reader(["en"], gpu=False)
-    return _reader
+
+def _get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    return _client
 
 
 def read_jersey(frame: np.ndarray, bbox: tuple) -> str | None:
-    """
-    Crop player bbox, upscale, run OCR, return jersey number string or None.
-    Focuses on the upper-torso region where numbers appear.
-    """
-    reader = _get_reader()
-
-    x1, y1, x2, y2 = bbox
-    height = y2 - y1
-
-    # Jersey numbers appear on upper 60% of the body (torso)
-    torso_bbox = (x1, y1, x2, y1 + height * 0.6)
-    crop = crop_bounding_box(frame, torso_bbox, padding=5)
-
+    """Send a player crop to Claude Haiku to read the jersey number."""
+    crop = crop_bounding_box(frame, bbox, padding=8)
     if crop.size == 0:
         return None
 
-    crop_up = upscale(crop, scale=3.0)
-    results  = reader.readtext(crop_up, allowlist="0123456789", min_size=10)
+    h, w = crop.shape[:2]
+    if h < 5 or w < 3:
+        return None
 
-    for (_, text, confidence) in results:
-        text = text.strip()
-        if text.isdigit() and confidence > 0.4:
-            return text
+    # Upscale to at least 100px tall so Claude can read tiny numbers from wide shots
+    if h < 100:
+        scale = 100 / h
+        crop = cv2.resize(crop, (max(1, int(w * scale)), 100), interpolation=cv2.INTER_CUBIC)
 
-    return None
+    _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    img_b64 = base64.standard_b64encode(buf.tobytes()).decode("utf-8")
+
+    try:
+        response = _get_client().messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64},
+                    },
+                    {
+                        "type": "text",
+                        "text": "What jersey number is on this soccer player? Reply with ONLY the number (e.g. '11'), or 'none' if not visible.",
+                    },
+                ],
+            }],
+        )
+        text = response.content[0].text.strip()
+        digits = "".join(c for c in text if c.isdigit())
+        return digits if digits else None
+    except Exception:
+        return None
 
 
 def find_target_player(
@@ -49,21 +71,32 @@ def find_target_player(
     tracks: list[dict],
     target_jersey: str,
     jersey_cache: dict,
+    frame_idx: int = 0,
+    force_read: bool = False,
 ) -> dict | None:
     """
-    Given current tracks, find the one matching target_jersey.
-    jersey_cache maps track_id -> confirmed jersey number to avoid re-reading every frame.
-    Returns the matching track dict or None.
+    Find the track matching target_jersey.
+
+    jersey_cache: track_id -> confirmed jersey string.
+    Unconfirmed tracks are retried every RETRY_INTERVAL frames.
+
+    force_read=True: skip cache and re-read all tracks from scratch.
+    Use at Veo moment anchor points to re-identify the player after a track drop.
     """
     for track in tracks:
         tid = track["track_id"]
 
-        # Use cached assignment if we've already confirmed this track's jersey
-        if tid in jersey_cache:
+        if not force_read and tid in jersey_cache:
             if jersey_cache[tid] == target_jersey:
                 return track
             continue
 
+        if not force_read:
+            last_attempt = _attempt_log.get(tid, -RETRY_INTERVAL)
+            if frame_idx - last_attempt < RETRY_INTERVAL:
+                continue
+
+        _attempt_log[tid] = frame_idx
         jersey = read_jersey(frame, track["bbox"])
         if jersey is not None:
             jersey_cache[tid] = jersey

@@ -26,17 +26,15 @@ def get_video_info(video_path: str) -> dict:
     return {"fps": fps, "total_frames": total, "width": width, "height": height, "duration_sec": duration}
 
 
-def extract_frames(video_path: str, sample_fps: int = 2) -> list[tuple[int, float, np.ndarray]]:
+def extract_frames(video_path: str, sample_fps: int = 2):
     """
     Yields (frame_index, timestamp_sec, frame) at sample_fps rate.
-    Lower sample_fps = faster processing, less precision.
-    2 fps is a good balance for a 90-min game.
+    Generator — never loads more than one frame into memory at a time.
     """
-    cap   = cv2.VideoCapture(video_path)
-    fps   = cap.get(cv2.CAP_PROP_FPS)
-    step  = max(1, int(fps / sample_fps))
-    idx   = 0
-    frames = []
+    cap  = cv2.VideoCapture(video_path)
+    fps  = cap.get(cv2.CAP_PROP_FPS)
+    step = max(1, int(fps / sample_fps))
+    idx  = 0
 
     while True:
         ret, frame = cap.read()
@@ -44,11 +42,10 @@ def extract_frames(video_path: str, sample_fps: int = 2) -> list[tuple[int, floa
             break
         if idx % step == 0:
             ts = idx / fps
-            frames.append((idx, ts, frame))
+            yield (idx, ts, frame)
         idx += 1
 
     cap.release()
-    return frames
 
 
 def save_keyframe(frame: np.ndarray, output_path: str) -> str:
